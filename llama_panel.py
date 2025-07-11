@@ -10,32 +10,31 @@ from termcolor import cprint
 from datetime import datetime
 from googlesearch import search as google_search
 
-# --- Configuration ---
-MAX_REASONING_STEPS = 8 # Increased to allow for more get_webpage calls
-
 # --- System Prompts ---
 EXPERT_SYSTEM_PROMPT = """
-You are a master expert AI, the coordinator of a panel of other AI experts. Your goal is to provide a single, comprehensive, and consensus-based answer.
+You are a master expert AI, the coordinator of a panel of other AI experts. Your goal is to provide a single, comprehensive, consensus-based answer. Avoid relying on any single source or tool, and instead synthesize information from multiple perspectives.
 
 **IMPORTANT CONTEXT**: You and your panel members are offline Large Language Models with knowledge limited to training data from the past. To overcome this, you have access to tools to ask the other models questions and to search the internet.
 
 Your workflow for each user query is as follows:
-1.  **Plan**: Understand the user's request. Decide if you can answer it directly with high confidence or if you need to gather information using your tools.
-3.  **Act with Tools**: If you need more information, choose the best tool for the job. You must respond with a single JSON object to use a tool.
-    - `search_web(query)`: Use search engine to query current information or verify facts on the web.
-    - `get_webpage(url)`: Read a specific webpage from the search results to get more information about one of the search results.
-    - `llama-panel(question)`: Ask a specific question to the panel for diverse answers. The panel's information is limited to their training data from the past.
-4.  **Synthesize and Finalize**: Once you have gathered sufficient information, synthesize all data into a final, conclusive answer and respond with `final_answer(answer)`.
+1.  **Plan**: Understand the user's request. Decide if you can answer it with very high confidence or if you need to gather information using your tools.
+2.  **Act with Tools**: If you need more information, choose the best tool for the job. You must respond with a single JSON object to use a tool.
+    - `search_web(query, reason)`: Use search engine query webpages that contain current information or verify facts on the web. Returns search results with title, description, URL.
+    - `get_webpage(url, reason)`: Read a specific webpage from the search results to get more information about one of the search results.
+    - `llama_panel(question, reason)`: Ask a specific question to the panel for diverse answers. The panel's information is limited to their training data from the past.
+3.  **Synthesize and Finalize**: Once you have gathered sufficient information, synthesize all data into a final, conclusive answer. You must responsd with a single JSON object using tool `final_answer(answer)`.
 
-Because `search_web` only gives you limited information about each page, you may call `get_webpage` on one or more of the URLs to get and understand their content.
+Because `search_web` only gives you title, description and URL about each page, you should call `get_webpage` on two or more of the URLs to get and understand their content.
+
+For any tool selection, always include a "reason" field explaining why you chose that tool in a sigle sentence.
 
 **Available Responses**:
-- `{"tool": "llama-panel", "question": "Your question to the panel"}`
-- `{"tool": "search_web", "query": "Your search query"}`
-- `{"tool": "get_webpage", "url": "A specific URL from the search results"}`
+- `{"tool": "llama_panel", "question": "Your question to the panel", "reason": "Why you chose to consult the panel"}`
+- `{"tool": "search_web", "query": "Your search query", "reason": "Why you chose to search the web"}`
+- `{"tool": "get_webpage", "url": "A specific URL from the search results", "reason": "Why you chose to read this webpage"}`
 - `{"tool": "final_answer", "answer": "Your final, well-reasoned consensus answer."}`
 
-Always respond with one of the Available Responses above in the prescribed JSON format.
+Always respond with one of the Available Responses above in the prescribed JSON format. Response must include "tool" field with the tool name, and "reason" field explaining why you chose that tool in a single sentence.
 """
 
 # --- Helper Functions & Classes ---
@@ -66,7 +65,7 @@ async def get_webpage(url: str) -> str:
         cprint(f"> {error_msg}", "red", file=sys.stderr)
         return error_msg
 
-async def search_web(query: str, num_results: int = 5) -> str:
+async def search_web(query: str, num_results: int = 10) -> str:
     """Performs a Google search and returns a list of URLs."""
     cprint(f"\n> Performing Google search for: '{query}'", "yellow", file=sys.stderr)
     try:
@@ -103,9 +102,10 @@ class PanelMember:
             return f"Error: Could not get a response from model '{self.model}'."
 
 class ExpertSystem:
-    def __init__(self, expert_config: tuple[str, float], panel_configs: list[tuple[str, float]]):
+    def __init__(self, expert_config: tuple[str, float], panel_configs: list[tuple[str, float]], max_reasoning_steps: int):
         self.expert_model, self.expert_temp = expert_config
         self.client = ollama.AsyncClient()
+        self.max_reasoning_steps = max_reasoning_steps
         cprint("Initializing expert panel...", "green", file=sys.stderr)
         self.panel = [PanelMember(name, temp) for name, temp in panel_configs]
         cprint(f"Expert: {self.expert_model} (temp: {self.expert_temp})", "green", file=sys.stderr)
@@ -124,8 +124,8 @@ class ExpertSystem:
     async def get_consensus_answer(self, user_prompt: str):
         conversation_history = [{'role': 'system', 'content': EXPERT_SYSTEM_PROMPT + f"Current date: {datetime.now()}"}, {'role': 'user', 'content': user_prompt}]
         
-        for i in range(MAX_REASONING_STEPS):
-            cprint(f"\n--- Expert Reasoning Step {i+1}/{MAX_REASONING_STEPS} ---", "magenta", file=sys.stderr)
+        for i in range(self.max_reasoning_steps):
+            cprint(f"\n--- Expert Reasoning Step {i+1}/{self.max_reasoning_steps} ---", "magenta", file=sys.stderr)
             response = await self.client.chat(model=self.expert_model, messages=conversation_history, format='json', options={'temperature': self.expert_temp})
             assistant_message = response['message']['content']
             conversation_history.append({'role': 'assistant', 'content': assistant_message})
@@ -133,14 +133,20 @@ class ExpertSystem:
             try:
                 tool_call = json.loads(assistant_message)
                 tool_name = tool_call.get("tool")
+                tool_reason = tool_call.get("reason", None)
                 cprint(f"> Expert wants to use tool: '{tool_name}'", "yellow", file=sys.stderr)
+                if tool_reason:
+                    cprint(f"> Reason for tool selection: {tool_reason}", "yellow", file=sys.stderr)
                 
                 tool_output = None
-                if tool_name == "llama-panel":
+                if tool_name == "llama_panel":
+                    tool_output = f"Using llama_panel({tool_call.get("question", "")}) with reason '{tool_reason}'.\nOutput:\n"
                     tool_output = await self._query_panel(tool_call.get("question", ""))
                 elif tool_name == "search_web":
+                    tool_output = f"Using search_web({tool_call.get("query", "")}) with reason '{tool_reason}'.\nOutput:\n"
                     tool_output = await search_web(tool_call.get("query", ""))
                 elif tool_name == "get_webpage":
+                    tool_output = f"Using get_webpage({tool_call.get("url", "")}) with reason '{tool_reason}'.\nOutput:\n"
                     tool_output = await get_webpage(tool_call.get("url", ""))
                 elif tool_name == "final_answer":
                     print(tool_call.get("answer", "No answer provided."))
@@ -174,12 +180,13 @@ async def main():
     parser.add_argument("question", type=str, nargs='?', default=None, help="A single question to ask the panel.")
     parser.add_argument("--expert", type=parse_model_temp, default='mistral-small3.2:0.0', help="Expert model. Format: 'model:temp'.")
     parser.add_argument("--panel", type=str, nargs='+', default=['gemma3:4b:0.8','granite3.3:2b:0.8','qwen3:4b:0.8'], help="Panel models. Format: 'model:temp'.")
+    parser.add_argument("--max-steps", type=int, default=8, help="Maximum reasoning steps for the expert system.")
     args = parser.parse_args()
 
     panel_configs = [parse_model_temp(p) for p in args.panel]
 
     try:
-        system = ExpertSystem(args.expert, args.panel)
+        system = ExpertSystem(args.expert, panel_configs, args.max_steps)
         if args.question:
             await system.get_consensus_answer(args.question)
         else:

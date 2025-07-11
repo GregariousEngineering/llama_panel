@@ -18,7 +18,7 @@ Standard Large Language Models operate in isolation, limited by their training d
 
 -   ✅ **Autonomous Orchestration:** An "Expert" agent analyzes user queries, formulates a plan, and independently decides which tools to use—whether to consult its panel, search the web, or read a specific webpage.
 
--   ✅ **Real-Time Web Access:** Overcome the knowledge cut-off problem. The expert agent can perform rich web searches (via DuckDuckGo) to gather up-to-the-minute information and read full webpage content for deep analysis.
+-   ✅ **Real-Time Web Access:** Overcome the knowledge cut-off problem. The expert agent can perform rich web searches (via Google) to gather up-to-the-minute information and read full webpage content for deep analysis.
 
 -   ✅ **Fully Customizable:** You control the architecture. Define the expert model, assemble your panel with any Ollama-compatible models, and fine-tune the "creativity" (temperature) of each agent via simple command-line flags.
 
@@ -35,7 +35,7 @@ graph TD
     subgraph "Llama Panel: Core Reasoning Loop"
         D[🧠 Expert Agent];
         E{Formulates Plan};
-        F[🔎 search_web (DDG)];
+        F[🔎 search_web (Google)];
         G[📖 get_webpage];
         I[📚 query_panel];
         H[✅ Synthesize Final Answer];
@@ -63,9 +63,10 @@ graph TD
 2.  **Ollama**: The Ollama service must be installed and running. Download from [ollama.com](https://ollama.com).
 3.  **LLM Models**: Pull the models you intend to use. For the default configuration, you will need:
     ```bash
-    ollama pull llama3
     ollama pull mistral
     ollama pull gemma:2b
+    ollama pull granite
+    ollama pull qwen
     ```
 
 ### Installation
@@ -73,8 +74,7 @@ graph TD
 Clone or download `llama_panel.py` and install the required Python packages.
 
 ```bash
-# Note the official package name for the search library is `ddgs`
-pip install ollama termcolor ddgs httpx beautifulsoup4
+pip install ollama termcolor googlesearch-python httpx beautifulsoup4
 ```
 
 Make the script executable for convenience:
@@ -108,18 +108,24 @@ For automation and scripting, provide the query as an argument. The final, clean
 Tailor the agentic system to your specific needs using command-line flags.
 
 **1. Set a Custom Expert Model:**
-Use a more capable model like `llama3:70b` as the orchestrator for complex reasoning tasks.
+Use a more capable model as the orchestrator for complex reasoning tasks.
 ```bash
-./llama_panel.py --expert "llama3:70b:0.1" "Develop a multi-stage marketing plan for a new SaaS product."
+./llama_panel.py --expert "llama3:8b:0.1" "Develop a multi-stage marketing plan for a new SaaS product."
 ```
 
 **2. Assemble a Specialist Panel:**
 Create a panel with a creative agent and a code-focused agent for a development task.
 ```bash
 ./llama_panel.py \
-  --expert "llama3:8b:0.2" \
-  --panel "mistral:1.2" "codellama:0.5" \
+  --expert "mistral-small3.2:0.0" \
+  --panel "gemma3:4b:0.8" "granite3.3:2b:0.8" "qwen3:4b:0.8" \
   "Brainstorm three novel features for a to-do list application and outline the code for the most promising one."
+```
+
+**3. Control Reasoning Depth:**
+Limit or extend the number of reasoning steps the expert agent can take before finalizing an answer.
+```bash
+./llama_panel.py --max-steps 12 "Summarize the latest research on quantum computing hardware."
 ```
 
 ## Potential Use Cases
